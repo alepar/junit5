@@ -10,8 +10,6 @@
 
 package org.junit.platform.reporting.legacy.xml;
 
-import static org.apiguardian.api.API.Status.EXPERIMENTAL;
-
 import java.io.IOException;
 import java.io.PrintWriter;
 import java.io.Writer;
@@ -19,13 +17,15 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.time.Clock;
-
+import java.util.Optional;
 import javax.xml.stream.XMLStreamException;
-
 import org.apiguardian.api.API;
+import static org.apiguardian.api.API.Status.EXPERIMENTAL;
 import org.junit.platform.engine.TestExecutionResult;
+import org.junit.platform.engine.TestSource;
 import org.junit.platform.engine.UniqueId;
 import org.junit.platform.engine.reporting.ReportEntry;
+import org.junit.platform.engine.support.descriptor.ClassSource;
 import org.junit.platform.launcher.TestExecutionListener;
 import org.junit.platform.launcher.TestIdentifier;
 import org.junit.platform.launcher.TestPlan;
@@ -51,6 +51,7 @@ public class LegacyXmlReportGeneratingListener implements TestExecutionListener 
 	private final Clock clock;
 
 	private XmlReportData reportData;
+	private TestPlan testPlan;
 
 	public LegacyXmlReportGeneratingListener(Path reportsDir, PrintWriter out) {
 		this(reportsDir, out, Clock.systemDefaultZone());
@@ -69,29 +70,37 @@ public class LegacyXmlReportGeneratingListener implements TestExecutionListener 
 
 	@Override
 	public void testPlanExecutionStarted(TestPlan testPlan) {
-		this.reportData = new XmlReportData(testPlan, clock);
-		try {
-			Files.createDirectories(this.reportsDir);
-		}
-		catch (IOException e) {
-			printException("Could not create reports directory: " + this.reportsDir, e);
-		}
+		this.testPlan = testPlan;
 	}
 
 	@Override
 	public void testPlanExecutionFinished(TestPlan testPlan) {
-		this.reportData = null;
+		this.testPlan = null;
 	}
 
 	@Override
 	public void executionSkipped(TestIdentifier testIdentifier, String reason) {
-		this.reportData.markSkipped(testIdentifier, reason);
-		writeXmlReportInCaseOfRoot(testIdentifier);
+		if (this.reportData != null) {
+			this.reportData.markSkipped(testIdentifier, reason);
+			writeXmlReportInCaseOfRoot(testIdentifier);
+		}
 	}
 
 	@Override
 	public void executionStarted(TestIdentifier testIdentifier) {
-		this.reportData.markStarted(testIdentifier);
+		if (isClassLevel(testIdentifier)) {
+			this.reportData = new XmlReportData(testPlan, clock);
+			try {
+				Files.createDirectories(this.reportsDir);
+			}
+			catch (IOException e) {
+				printException("Could not create reports directory: " + this.reportsDir, e);
+			}
+		}
+
+		if (this.reportData != null) {
+			this.reportData.markStarted(testIdentifier);
+		}
 	}
 
 	@Override
@@ -101,14 +110,16 @@ public class LegacyXmlReportGeneratingListener implements TestExecutionListener 
 
 	@Override
 	public void executionFinished(TestIdentifier testIdentifier, TestExecutionResult result) {
-		this.reportData.markFinished(testIdentifier, result);
-		writeXmlReportInCaseOfRoot(testIdentifier);
+		if (this.reportData != null) {
+			this.reportData.markFinished(testIdentifier, result);
+			writeXmlReportInCaseOfRoot(testIdentifier);
+		}
 	}
 
 	private void writeXmlReportInCaseOfRoot(TestIdentifier testIdentifier) {
-		if (isRoot(testIdentifier)) {
-			String rootName = UniqueId.parse(testIdentifier.getUniqueId()).getSegments().get(0).getValue();
-			writeXmlReportSafely(testIdentifier, rootName);
+		if (isClassLevel(testIdentifier)) {
+			writeXmlReportSafely(testIdentifier, testIdentifier.getLegacyReportingName());
+			this.reportData = null;
 		}
 	}
 
@@ -122,8 +133,9 @@ public class LegacyXmlReportGeneratingListener implements TestExecutionListener 
 		}
 	}
 
-	private boolean isRoot(TestIdentifier testIdentifier) {
-		return !testIdentifier.getParentId().isPresent();
+	private boolean isClassLevel(TestIdentifier testIdentifier) {
+		final Optional<TestSource> source = testIdentifier.getSource();
+		return source.isPresent() && source.get() instanceof ClassSource;
 	}
 
 	private void printException(String message, Exception exception) {
